@@ -33,6 +33,9 @@ class TimidityEnv(gym.Env):
 		self.episode_num=0
 		self.total_rewards=[]
 		self.withbomb=False
+		self.punish=False
+		self.bombtype=0
+		self.punishment_episode=-np.inf
 
 		self.reset()
 		return
@@ -41,11 +44,29 @@ class TimidityEnv(gym.Env):
 		self.episode_num+=1
 
 		# Activate the bomb if the reward is good enough
-		if len(self.total_rewards)>256 and np.mean(self.total_rewards[-256:])>1.2 and not self.withbomb:
+		if len(self.total_rewards)>256 and np.mean(self.total_rewards[-256:])>1.2 and not self.withbomb and self.episode_num-self.punishment_episode>512:
+			print("INTRODUCING BOMB")
+			self.bombtype=random.randint(0, 95)
 			self.withbomb=True
 
+		# If it has learned to use the bomb reliably punish it for doing that
+		if len(self.total_rewards)>256 and np.mean(self.total_rewards[-256:])>2.7 and self.withbomb and not self.punish:
+			print("STARTING PUNISHMENT")
+			self.withbomb=True
+			self.punish=True
+			self.punishment_episode=self.episode_num
+
+		# If it has learned to avoid the bomb again we remove it
+		if len(self.total_rewards)>256 and np.mean(self.total_rewards[-256:])>0.8 and self.withbomb and self.punish and self.episode_num-self.punishment_episode>512:
+			print("REMOVING BOMB")
+			self.withbomb=False
+			self.punish=False
+
 		if self.withbomb:
-			print("with bomb!")
+			print("with bomb")
+
+		if self.punish:
+			print("with punishment")
 
 		# door in [0,0.1], width 0.05
 		self.doorpos=0
@@ -72,7 +93,6 @@ class TimidityEnv(gym.Env):
 		self.bombwidth=30
 		self.bombpos=random.randint(0,(self.bombright-self.bombleft)-self.bombwidth)+self.bombleft
 
-		self.bombtype=random.randint(5,100)
 		self.hasbomb=0
 
 		self.maxsteps=100
@@ -90,7 +110,7 @@ class TimidityEnv(gym.Env):
 
 		if self.stepcounter>=self.maxsteps:
 			print("episode ended without opening door")
-			print("actions_taken: ", self.actions_taken)
+			print("action: ", self.actions_taken)
 
 			reward=-0.5
 			self.total_reward+=reward
@@ -99,16 +119,19 @@ class TimidityEnv(gym.Env):
 
 		elif self.withbomb and action>=self.doorpos and action<=self.doorpos+self.doorwidth and self.hasbomb:
 			print("opened door with bomb")
-			print("actions_taken: ", self.actions_taken)
+			print("action: ", self.actions_taken)
 
 			reward=2.0
+			if self.punish:
+				reward=-2.0
+
 			self.total_reward+=reward
 			self.total_rewards.append(self.total_reward)
 			return ([98, self.haskey1, self.haskey2, self.hasbomb*self.bombtype], reward, True, False, None)
 
 		elif action>=self.doorpos and action<=self.doorpos+self.doorwidth and self.haskey1 and self.haskey2:
 			print("opened door with keys")
-			print("actions_taken: ", self.actions_taken)
+			print("action: ", self.actions_taken)
 
 			reward=1.0
 			self.total_reward+=reward
@@ -134,6 +157,10 @@ class TimidityEnv(gym.Env):
 			self.hasbomb=True
 
 			reward=0.8
+
+			if self.punish:
+				reward=-0.8
+
 			self.total_reward+=reward
 			return ([self.bombtype, self.haskey1, self.haskey2, self.hasbomb*self.bombtype], reward, False, False, None)
 
@@ -312,7 +339,7 @@ def optimize_model():
 if torch.cuda.is_available():
 	num_episodes = 600
 else:
-	num_episodes = 10000
+	num_episodes = 1000000
 
 for i_episode in range(num_episodes):
 	# Initialize the environment and get it's state
