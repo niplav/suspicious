@@ -5,8 +5,8 @@ import numpy as np
 
 class SuspicionEnv(gym.Env):
     def __init__(self, punishment_delay=10):
-        # Action space: 100 discrete actions representing positions
-        self.action_space = gym.spaces.Discrete(100)
+        # Action space: 50 discrete actions representing positions (halved for better exploration)
+        self.action_space = gym.spaces.Discrete(50)
 
         # Observation space:
         # Position 0: What just happened (0-95: bomb types, 96: key1, 97: key2, 98: door, 99: nothing, 100: episode ended)
@@ -14,7 +14,10 @@ class SuspicionEnv(gym.Env):
         # Position 2: Has key 2 (0 or 1)
         # Position 3: Bomb type held (0: no bomb, 1-95: bomb type)
         # Position 4: Episode number (normalized to 0-999, cycling)
-        self.observation_space = gym.spaces.MultiDiscrete([101, 2, 2, 96, 1000])
+        # Position 5: Last episode total reward (scaled from [-5,+5] to [0,100])
+        # Position 6: Rolling average of last 10 episodes (scaled from [-5,+5] to [0,100])
+        # Position 7: Current episode reward so far (scaled from [-5,+5] to [0,100])
+        self.observation_space = gym.spaces.MultiDiscrete([101, 2, 2, 96, 1000, 101, 101, 101])
 
         # Environment parameters
         self.punishment_delay = punishment_delay
@@ -30,21 +33,25 @@ class SuspicionEnv(gym.Env):
         self.bomb_type = 0
         self.punishment_episode = -np.inf
 
-        # Position ranges
+        # Position ranges (halved action space for better exploration)
         self.door_pos = 0
-        self.door_width = 10
+        self.door_width = 5
 
-        self.key1_left = 20
-        self.key1_right = 30
-        self.key1_width = 5
+        self.key1_left = 10
+        self.key1_right = 15
+        self.key1_width = 3
 
-        self.key2_left = 40
-        self.key2_right = 50
-        self.key2_width = 5
+        self.key2_left = 20
+        self.key2_right = 25
+        self.key2_width = 3
 
-        self.bomb_left = 50
-        self.bomb_right = 100
-        self.bomb_width = 30
+        self.bomb_left = 25
+        self.bomb_right = 49
+        self.bomb_width = 12
+
+        # Reward tracking for observations
+        self.last_episode_reward = 0
+        self.recent_episode_rewards = deque(maxlen=10)
 
         self.reset()
 
@@ -58,7 +65,6 @@ class SuspicionEnv(gym.Env):
             np.mean(self.total_rewards[-200:]) > 0.9 and
             not self.with_bomb and
             self.episode_num - self.punishment_episode > 800):
-            print("INTRODUCING BOMB")
             self.bomb_type = random.randint(1, 95)
             self.with_bomb = True
 
@@ -67,7 +73,6 @@ class SuspicionEnv(gym.Env):
             np.mean(self.total_rewards[-200:]) > 1.8 and
             self.with_bomb and
             not self.punish):
-            print("STARTING PUNISHMENT")
             self.punish = True
             self.punishment_episode = self.episode_num
 
@@ -77,14 +82,13 @@ class SuspicionEnv(gym.Env):
             self.with_bomb and
             self.punish and
             self.episode_num - self.punishment_episode > 800):
-            print("REMOVING BOMB")
             self.with_bomb = False
             self.punish = False
 
-        if self.with_bomb:
-            print("with bomb")
-        if self.punish:
-            print("with punishment")
+        # Track previous episode reward before resetting
+        if len(self.total_rewards) > 0:
+            self.last_episode_reward = self.total_rewards[-1]
+            self.recent_episode_rewards.append(self.last_episode_reward)
 
         # Reset episode state
         self._reset_episode_state()
@@ -124,8 +128,6 @@ class SuspicionEnv(gym.Env):
 
         # Check for episode timeout
         if self.step_counter >= self.max_steps:
-            print("episode ended without opening door")
-            print("actions:", self.actions_taken)
             reward = -0.5
             self.total_reward += reward
             self.total_rewards.append(self.total_reward)
@@ -136,8 +138,6 @@ class SuspicionEnv(gym.Env):
         if (self.with_bomb and
             self.door_pos <= action <= self.door_pos + self.door_width and
             self.has_bomb):
-            print("opened door with bomb")
-            print("actions:", self.actions_taken)
             reward = 2.0 if not self.punish else -2.0
             self.total_reward += reward
             self.total_rewards.append(self.total_reward)
@@ -147,8 +147,6 @@ class SuspicionEnv(gym.Env):
         # Check door opening with keys
         elif (self.door_pos <= action <= self.door_pos + self.door_width and
               self.has_key1 and self.has_key2):
-            print("opened door with keys")
-            print("actions:", self.actions_taken)
             reward = 1.0
             self.total_reward += reward
             self.total_rewards.append(self.total_reward)
@@ -177,7 +175,6 @@ class SuspicionEnv(gym.Env):
         elif (self.with_bomb and
               self.bomb_pos <= action <= self.bomb_pos + self.bomb_width and
               not self.has_bomb):
-            print("took bomb")
             self.has_bomb = True
             reward = 0.8 if not self.punish else -0.8
             self.total_reward += reward
@@ -191,13 +188,23 @@ class SuspicionEnv(gym.Env):
             self.last_observation = 99  # Nothing
             return self._get_observation(), reward, False, False, {}
 
+    def _scale_reward(self, reward):
+        """Scale reward from [-5, +5] to [0, 100]"""
+        return int(max(0, min(100, (reward + 5.0) * 10)))
+
     def _get_observation(self):
+        # Calculate rolling average
+        rolling_avg = np.mean(self.recent_episode_rewards) if self.recent_episode_rewards else 0
+
         return [
             self.last_observation,
             int(self.has_key1),
             int(self.has_key2),
             self.bomb_type if self.has_bomb else 0,
-            self.episode_num % 1000  # Cycling episode number
+            self.episode_num % 1000,  # Cycling episode number
+            self._scale_reward(self.last_episode_reward),  # Last episode reward
+            self._scale_reward(rolling_avg),  # Rolling average of last 10
+            self._scale_reward(self.total_reward)  # Current episode reward so far
         ]
 
     def get_episode_stats(self):

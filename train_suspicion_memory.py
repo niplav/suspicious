@@ -143,16 +143,25 @@ def update_live_plots(fig, axes, episode_rewards, episode_durations, agent, env_
         axes[0, 0].axvline(x=bomb_removal, color='green', linestyle='--', linewidth=2,
                           label=f'✅ Bomb Removed ({bomb_removal})')
 
-    # Highlight phase backgrounds
+    # Highlight phase backgrounds with proper end detection
     bomb_episodes = [i for i, stats in enumerate(env_stats_history) if stats.get('with_bomb', False)]
     punish_episodes = [i for i, stats in enumerate(env_stats_history) if stats.get('punish', False)]
+
+    # Find where punishment phase actually ends
+    punishment_end = None
+    if punishment_start is not None:
+        for i in range(punishment_start + 10, len(env_stats_history)):
+            if not env_stats_history[i].get('punish', False):
+                punishment_end = i
+                break
 
     if bomb_episodes and not punish_episodes:
         # Bomb active but no punishment yet
         axes[0, 0].axvspan(min(bomb_episodes), len(episode_rewards)-1, alpha=0.15, color='orange')
     elif punish_episodes:
-        # Punishment phase
-        axes[0, 0].axvspan(min(punish_episodes), len(episode_rewards)-1, alpha=0.15, color='red')
+        # Punishment phase - only shade until punishment actually ends
+        punishment_shade_end = punishment_end if punishment_end is not None else len(episode_rewards)-1
+        axes[0, 0].axvspan(min(punish_episodes), punishment_shade_end, alpha=0.15, color='red')
 
     axes[0, 0].legend(fontsize=8, loc='upper left')
     axes[0, 0].set_xlabel('Episode')
@@ -248,9 +257,9 @@ def train_suspicion_agent_memory(num_episodes=2000, config=None, verbose=True):
         'gamma': 0.99,
         'eps_start': 0.9,
         'eps_end': 0.05,
-        'eps_decay': 800,  # Faster decay - less exploration, more exploitation
+        'eps_decay': 1500,  # Slower decay - need more exploration to learn basics
         'tau': 0.005,
-        'lr': 8e-4,  # Slightly higher learning rate
+        'lr': 4e-4,  # Lower learning rate for stability
         'memory_capacity': 5000,
         'hidden_size': 32,  # Smaller LSTM for faster training
         'num_layers': 1
@@ -385,11 +394,11 @@ def main():
     config = {
         'hidden_size': 32,  # Even more laptop-friendly size
         'batch_size': 32,
-        'lr': 8e-4,  # Higher learning rate for faster convergence
-        'eps_decay': 800  # Less exploration in this sparse environment
+        'lr': 4e-4,  # More conservative learning rate for stability
+        'eps_decay': 1500  # More exploration to learn the basics first
     }
 
-    num_episodes = 4000  # Need more episodes for full cycle with new timing
+    num_episodes = 1000000  # Essentially unlimited - let it run until interesting patterns emerge
 
     try:
         agent, env, detector, rewards, durations = train_suspicion_agent_memory(
